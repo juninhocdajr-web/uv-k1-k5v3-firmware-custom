@@ -70,14 +70,15 @@ void UI_DisplayStatus()
     char str[8] = "";
 
 #ifdef ENABLE_FEAT_F4HWN_RXTX_LOG
+    // The filter label reuses the leftmost slot (pixels 2..16) normally
+    // reserved by the power-save and scan indicators; those two are skipped
+    // on the log screen so the rest of the bar keeps its usual layout.
     const bool isRxTxLogScreen = gScreenToDisplay == DISPLAY_RXTX_LOG;
     if (isRxTxLogScreen) {
         const char *filter = RXTX_LOG_GetFilterName();
         const uint8_t end = (filter[2] == 0) ? 10 : 14;
 
         GUI_DisplaySmallestInverse(filter, 2, 0, true, true, end);
-        x = 18;
-        x1 = x;
     }
 #endif
 
@@ -93,23 +94,27 @@ void UI_DisplayStatus()
     } else {
 #endif
 
-#ifdef ENABLE_NOAA
-    // NOAA indicator
-    if (!(gScanStateDir != SCAN_OFF || SCANNER_IsScanning()) && gIsNoaaMode) { // NOASS SCAN indicator
-        memcpy(line + x, BITMAP_NOAA, sizeof(BITMAP_NOAA));
-    }
-    // Power Save indicator
-    else if (gCurrentFunction == FUNCTION_POWER_SAVE) {
-        memcpy(line + x, gFontPowerSave, sizeof(gFontPowerSave));
-    }
-    x += 8;
-#else
-    // Power Save indicator
-    if (gCurrentFunction == FUNCTION_POWER_SAVE) {
-        memcpy(line + x, gFontPowerSave, sizeof(gFontPowerSave));
-    }
-    x += 8;
+#ifdef ENABLE_FEAT_F4HWN_RXTX_LOG
+    if (!isRxTxLogScreen)
 #endif
+    {
+#ifdef ENABLE_NOAA
+        // NOAA indicator
+        if (!(gScanStateDir != SCAN_OFF || SCANNER_IsScanning()) && gIsNoaaMode) { // NOASS SCAN indicator
+            memcpy(line + x, BITMAP_NOAA, sizeof(BITMAP_NOAA));
+        }
+        // Power Save indicator
+        else if (gCurrentFunction == FUNCTION_POWER_SAVE) {
+            memcpy(line + x, gFontPowerSave, sizeof(gFontPowerSave));
+        }
+#else
+        // Power Save indicator
+        if (gCurrentFunction == FUNCTION_POWER_SAVE) {
+            memcpy(line + x, gFontPowerSave, sizeof(gFontPowerSave));
+        }
+#endif
+    }
+    x += 8;
 
     x1 = x;
 
@@ -121,7 +126,11 @@ void UI_DisplayStatus()
     else
 #endif
     { // SCAN indicator
-        if (gScanStateDir != SCAN_OFF || SCANNER_IsScanning()) {
+        if ((gScanStateDir != SCAN_OFF || SCANNER_IsScanning())
+#ifdef ENABLE_FEAT_F4HWN_RXTX_LOG
+            && !isRxTxLogScreen
+#endif
+        ) {
             if (IS_MR_CHANNEL(gNextMrChannel) && !SCANNER_IsScanning()) { // channel mode
                 uint8_t end = 0;
 
