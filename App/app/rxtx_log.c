@@ -42,11 +42,12 @@
 typedef struct __attribute__((packed)) {
     uint32_t sequence;
     uint32_t frequency;
+    uint32_t trafficSeq;
     uint16_t durationSeconds;
     uint16_t channel;
     uint8_t  flags;
     char     name[RXTX_LOG_NAME_LEN];
-    uint8_t  reserved[7];
+    uint8_t  reserved[3];
     uint8_t  crc;
     uint8_t  commit;
 } RXTX_LogFlashEntry_t;
@@ -56,7 +57,6 @@ static_assert(RXTX_LOG_VIEW_ANCHOR_COUNT <= 32);
 
 static RXTX_LogEntry_t gViewCache[RXTX_LOG_VIEW_CACHE_COUNT];
 static uint16_t        gViewCacheStart;
-static uint16_t        gViewCacheTrafficIndex;
 static uint8_t         gViewCacheCount;
 static uint8_t         gViewCacheFilter;
 static bool            gViewCacheHasOlder;
@@ -69,20 +69,18 @@ static uint16_t        gViewScanSlot;
 static uint16_t        gViewScanScanned;
 static uint16_t        gViewScanSkip;
 static uint16_t        gViewScanIndex;
-static uint16_t        gViewScanTrafficIndex;
 static uint16_t        gViewAnchorSlots[RXTX_LOG_VIEW_ANCHOR_COUNT];
-static uint16_t        gViewAnchorTrafficIndexes[RXTX_LOG_VIEW_ANCHOR_COUNT];
 static uint32_t        gViewAnchorMask;
 static uint8_t         gViewAnchorFilter;
 static bool            gViewTotalKnown;
 static bool            gViewWrapPending;
 static uint16_t        gViewTotalRows;
-static uint16_t        gViewTotalTraffic;
 static bool            gClearActive;
 static uint8_t         gClearSector;
 static bool            gMenuClearHandled;
 static bool            gLogHasTraffic;
 static uint32_t        gNextSequence;
+static uint32_t        gNextTrafficSequence;
 static uint32_t        gNextFlashAddress;
 
 static bool            gSessionActive;
@@ -191,6 +189,7 @@ static void RXTX_LOG_CopyFromFlash(RXTX_LogEntry_t *dst, const RXTX_LogFlashEntr
 {
     dst->sequence        = src->sequence;
     dst->frequency       = src->frequency;
+    dst->trafficSeq      = src->trafficSeq;
     dst->durationSeconds = src->durationSeconds;
     dst->channel         = src->channel;
     dst->flags           = src->flags;
@@ -247,7 +246,7 @@ static void RXTX_LOG_EnsureViewAnchors(void)
     gViewAnchorFilter = gLogFilter;
 }
 
-static void RXTX_LOG_RecordViewAnchor(uint16_t indexFromNewest, uint16_t slot, uint16_t trafficIndex)
+static void RXTX_LOG_RecordViewAnchor(uint16_t indexFromNewest, uint16_t slot)
 {
     if ((indexFromNewest % RXTX_LOG_VIEW_ANCHOR_STRIDE) != 0)
         return;
@@ -257,11 +256,10 @@ static void RXTX_LOG_RecordViewAnchor(uint16_t indexFromNewest, uint16_t slot, u
         return;
 
     gViewAnchorSlots[anchor] = slot;
-    gViewAnchorTrafficIndexes[anchor] = trafficIndex;
     gViewAnchorMask |= (uint32_t)(1u << anchor);
 }
 
-static bool RXTX_LOG_FindViewAnchor(uint16_t indexFromNewest, uint16_t *anchorIndex, uint16_t *slot, uint16_t *trafficIndex)
+static bool RXTX_LOG_FindViewAnchor(uint16_t indexFromNewest, uint16_t *anchorIndex, uint16_t *slot)
 {
     uint16_t anchor = indexFromNewest / RXTX_LOG_VIEW_ANCHOR_STRIDE;
     if (anchor >= RXTX_LOG_VIEW_ANCHOR_COUNT)
@@ -271,7 +269,6 @@ static bool RXTX_LOG_FindViewAnchor(uint16_t indexFromNewest, uint16_t *anchorIn
         if ((gViewAnchorMask & (uint32_t)(1u << anchor)) != 0) {
             *anchorIndex = (uint16_t)(anchor * RXTX_LOG_VIEW_ANCHOR_STRIDE);
             *slot = gViewAnchorSlots[anchor];
-            *trafficIndex = gViewAnchorTrafficIndexes[anchor];
             return true;
         }
     } while (anchor-- > 0);
@@ -307,19 +304,25 @@ static void RXTX_LOG_NextFilter(void)
     gUpdateDisplay = true;
 }
 
+static void RXTX_LOG_ResetLogCounters(void)
+{
+    gClearSector         = 0;
+    gLogHasTraffic       = false;
+    gNextSequence        = 0;
+    gNextTrafficSequence = 0;
+    gNextFlashAddress    = RXTX_LOG_FLASH_BASE;
+    RXTX_LOG_InvalidateViewCache();
+}
+
 static void RXTX_LOG_StartClear(void)
 {
     if (gClearActive)
         return;
 
-    gClearActive      = true;
-    gClearSector      = 0;
-    gSessionActive    = false;
-    gLogCursor        = 0;
-    gLogHasTraffic    = false;
-    gNextSequence     = 0;
-    gNextFlashAddress = RXTX_LOG_FLASH_BASE;
-    RXTX_LOG_InvalidateViewCache();
+    gClearActive   = true;
+    gSessionActive = false;
+    gLogCursor     = 0;
+    RXTX_LOG_ResetLogCounters();
 }
 
 static void RXTX_LOG_StepClear(void)
@@ -331,12 +334,8 @@ static void RXTX_LOG_StepClear(void)
 
     gClearSector++;
     if (gClearSector >= RXTX_LOG_FLASH_SECTOR_COUNT) {
-        gClearActive      = false;
-        gClearSector      = 0;
-        gLogHasTraffic    = false;
-        gNextSequence     = 0;
-        gNextFlashAddress = RXTX_LOG_FLASH_BASE;
-        RXTX_LOG_InvalidateViewCache();
+        gClearActive = false;
+        RXTX_LOG_ResetLogCounters();
     }
 }
 
@@ -373,6 +372,13 @@ static bool RXTX_LOG_AlignLastViewPage(void)
     return true;
 }
 
+static void RXTX_LOG_StopViewScan(void)
+{
+    gViewScanActive        = false;
+    gViewScanDiscoverTotal = false;
+    gViewCacheComplete     = true;
+}
+
 static bool RXTX_LOG_TryWrapViewCacheScan(void)
 {
     if (!gViewCacheCircular ||
@@ -387,13 +393,13 @@ static bool RXTX_LOG_TryWrapViewCacheScan(void)
     gViewScanScanned = 0;
     gViewScanSkip = 0;
     gViewScanIndex = 0;
-    gViewScanTrafficIndex = 0;
     return true;
 }
 
 static void RXTX_LOG_StepViewCacheScan(void)
 {
     uint8_t budget = RXTX_LOG_VIEW_SCAN_BUDGET;
+    bool capReached = false;
 
     while (gViewScanActive && budget-- > 0 && gViewScanScanned < RXTX_LOG_SLOT_COUNT) {
         RXTX_LogFlashEntry_t flashEntry;
@@ -411,52 +417,44 @@ static void RXTX_LOG_StepViewCacheScan(void)
             !RXTX_LOG_MatchesFlags(flashEntry.flags))
             continue;
 
-        if (gViewScanTrafficIndex >= RXTX_LOG_VISIBLE_COUNT) {
-            gViewScanActive = false;
-            gViewScanDiscoverTotal = false;
-            gViewCacheComplete = true;
+        // Traffic entries carry their own absolute rank (trafficSeq); the
+        // distance from the newest one bounds how far back browsing goes,
+        // no running counter needed to reconstruct it during the scan.
+        if (RXTX_LOG_IsTrafficFlags(flashEntry.flags) &&
+            (gNextTrafficSequence - 1u - flashEntry.trafficSeq) >= RXTX_LOG_VISIBLE_COUNT) {
+            capReached = true;
+            RXTX_LOG_StopViewScan();
             break;
         }
 
-        const bool isTraffic = RXTX_LOG_IsTrafficFlags(flashEntry.flags);
-        RXTX_LOG_RecordViewAnchor(gViewScanIndex, gViewScanSlot, gViewScanTrafficIndex);
+        RXTX_LOG_RecordViewAnchor(gViewScanIndex, gViewScanSlot);
 
         if (gViewScanSkip > 0) {
             gViewScanSkip--;
             gViewScanIndex++;
-            if (isTraffic)
-                gViewScanTrafficIndex++;
             continue;
         }
 
         if (gViewCacheCount < RXTX_LOG_VIEW_CACHE_COUNT) {
             RXTX_LOG_CopyFromFlash(&gViewCache[gViewCacheCount], &flashEntry);
-            if (gViewCacheCount == 0)
-                gViewCacheTrafficIndex = gViewScanTrafficIndex;
             gViewCacheCount++;
         } else {
             gViewCacheHasOlder = true;
             if (!gViewScanDiscoverTotal) {
-                gViewScanActive = false;
-                gViewScanDiscoverTotal = false;
-                gViewCacheComplete = true;
+                RXTX_LOG_StopViewScan();
                 break;
             }
         }
 
         gViewScanIndex++;
-        if (isTraffic)
-            gViewScanTrafficIndex++;
         if (RXTX_LOG_TryWrapViewCacheScan())
             continue;
     }
 
-    if (gViewScanScanned >= RXTX_LOG_SLOT_COUNT ||
-        gViewScanTrafficIndex >= RXTX_LOG_VISIBLE_COUNT) {
+    if (gViewScanScanned >= RXTX_LOG_SLOT_COUNT || capReached) {
         if (!gViewScanWrapped) {
-            gViewTotalRows    = gViewScanIndex;
-            gViewTotalTraffic = gViewScanTrafficIndex;
-            gViewTotalKnown   = gViewTotalRows > 0;
+            gViewTotalRows  = gViewScanIndex;
+            gViewTotalKnown = gViewTotalRows > 0;
         }
 
         if (gViewWrapPending) {
@@ -470,9 +468,7 @@ static void RXTX_LOG_StepViewCacheScan(void)
         if (RXTX_LOG_TryWrapViewCacheScan())
             return;
 
-        gViewScanActive = false;
-        gViewScanDiscoverTotal = false;
-        gViewCacheComplete = true;
+        RXTX_LOG_StopViewScan();
     }
 
     if (!gViewCacheCircular && RXTX_LOG_AlignLastViewPage())
@@ -483,7 +479,6 @@ static void RXTX_LOG_StartViewCacheScan(uint16_t start, bool circular, bool disc
 {
     uint16_t anchorIndex;
     uint16_t anchorSlot;
-    uint16_t anchorTrafficIndex;
 
     start = RXTX_LOG_PageStart(start);
     RXTX_LOG_EnsureViewAnchors();
@@ -505,16 +500,14 @@ static void RXTX_LOG_StartViewCacheScan(uint16_t start, bool circular, bool disc
         return;
     }
 
-    if (RXTX_LOG_FindViewAnchor(start, &anchorIndex, &anchorSlot, &anchorTrafficIndex)) {
+    if (RXTX_LOG_FindViewAnchor(start, &anchorIndex, &anchorSlot)) {
         gViewScanSlot  = RXTX_LOG_NextSlot(anchorSlot);
         gViewScanSkip  = start - anchorIndex;
         gViewScanIndex = anchorIndex;
-        gViewScanTrafficIndex = anchorTrafficIndex;
     } else {
         gViewScanSlot  = RXTX_LOG_AddressToSlot(gNextFlashAddress);
         gViewScanSkip  = start;
         gViewScanIndex = 0;
-        gViewScanTrafficIndex = 0;
     }
 
     gViewScanScanned = 0;
@@ -586,6 +579,7 @@ static uint32_t RXTX_LOG_WriteEntry(const RXTX_LogEntry_t *src)
     memset(&entry, 0xFF, sizeof(entry));
     entry.sequence        = src->sequence;
     entry.frequency       = src->frequency;
+    entry.trafficSeq      = src->trafficSeq;
     entry.durationSeconds = src->durationSeconds;
     entry.channel         = src->channel;
     entry.flags           = src->flags;
@@ -680,8 +674,10 @@ void RXTX_LOG_Init(void)
 {
     uint32_t maxSequence = 0;
     uint32_t maxAddress = RXTX_LOG_FLASH_BASE;
+    uint32_t maxTrafficSeq = 0;
     uint8_t lastEntryFlags = 0;
     bool found = false;
+    bool foundTraffic = false;
 
     gLogCursor        = 0;
     gLogFilter        = RXTX_LOG_FILTER_ALL;
@@ -700,8 +696,13 @@ void RXTX_LOG_Init(void)
         if (!RXTX_LOG_IsValidFlashEntry(&flashEntry))
             continue;
 
-        if (RXTX_LOG_IsTrafficFlags(flashEntry.flags))
+        if (RXTX_LOG_IsTrafficFlags(flashEntry.flags)) {
             gLogHasTraffic = true;
+            if (!foundTraffic || flashEntry.trafficSeq > maxTrafficSeq) {
+                foundTraffic = true;
+                maxTrafficSeq = flashEntry.trafficSeq;
+            }
+        }
 
         if (!found || flashEntry.sequence > maxSequence) {
             found = true;
@@ -719,6 +720,8 @@ void RXTX_LOG_Init(void)
     } else {
         gNextSequence = 0;
     }
+
+    gNextTrafficSequence = foundTraffic ? maxTrafficSeq + 1u : 0;
 
     // Skip the marker if the log already ends with one (e.g. repeated
     // reboots with no RX/TX in between) to avoid stacking empty separators.
@@ -760,6 +763,7 @@ void RXTX_LOG_EndActive(void)
     memset(&entry, 0, sizeof(entry));
 
     entry.sequence        = gNextSequence++;
+    entry.trafficSeq      = gNextTrafficSequence++;
     entry.frequency       = gSessionFrequency;
     entry.durationSeconds = (gSessionTicks500ms + 1u) / 2u;
     entry.channel         = gSessionChannel;
@@ -958,7 +962,6 @@ void UI_DisplayRxTxLog(void)
         return;
     }
 
-    uint16_t displayIndex = gViewCacheTrafficIndex;
     for (uint8_t row = 0; row < RXTX_LOG_VIEW_CACHE_COUNT; row++) {
         if (gViewCacheCircular) {
             if (row >= gViewCacheCount)
@@ -978,12 +981,7 @@ void UI_DisplayRxTxLog(void)
         const bool isTx = RXTX_LOG_IsTx(&entry);
 
         RXTX_LOG_FormatTitle(&entry, title);
-        if (gViewCacheCircular &&
-            gViewTotalTraffic > 0 &&
-            displayIndex >= gViewTotalTraffic)
-            displayIndex = 0;
-        RXTX_LOG_DrawIndexBadge(displayIndex, row);
-        displayIndex++;
+        RXTX_LOG_DrawIndexBadge((uint16_t)(gNextTrafficSequence - 1u - entry.trafficSeq), row);
 
         if (isTx)
             UI_PrintStringSmallBold(title, 17, 0, row);

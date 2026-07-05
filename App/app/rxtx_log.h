@@ -26,6 +26,7 @@ typedef enum {
 typedef struct {
     uint32_t frequency;
     uint32_t sequence;
+    uint32_t trafficSeq;
     uint16_t durationSeconds;
     uint16_t channel;
     uint8_t  flags;
