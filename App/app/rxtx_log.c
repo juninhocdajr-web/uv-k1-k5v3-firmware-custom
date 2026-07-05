@@ -168,23 +168,6 @@ const char *RXTX_LOG_GetFilterName(void)
     return "ALL";
 }
 
-static void RXTX_LOG_SanitizeName(char *dst, const char *src)
-{
-    uint8_t i;
-
-    for (i = 0; i < RXTX_LOG_NAME_LEN; i++) {
-        char c = src ? src[i] : 0;
-        if (c < 32 || c > 126)
-            break;
-        dst[i] = c;
-    }
-
-    while (i > 0 && dst[i - 1] == ' ')
-        i--;
-
-    dst[i] = 0;
-}
-
 static void RXTX_LOG_CopyFromFlash(RXTX_LogEntry_t *dst, const RXTX_LogFlashEntry_t *src)
 {
     dst->sequence        = src->sequence;
@@ -650,9 +633,6 @@ static void RXTX_LOG_CaptureSession(uint8_t flags, const VFO_Info_t *vfo)
     const uint32_t frequency = (flags & RXTX_LOG_FLAG_TX) ? vfo->pTX->Frequency : vfo->pRX->Frequency;
     const bool isMemoryChannel = IS_MR_CHANNEL(vfo->CHANNEL_SAVE);
     const uint16_t channel = isMemoryChannel ? vfo->CHANNEL_SAVE : RXTX_LOG_CHANNEL_NONE;
-    char name[RXTX_LOG_NAME_LEN + 1];
-
-    RXTX_LOG_SanitizeName(name, isMemoryChannel ? vfo->Name : NULL);
 
     if (gSessionActive &&
         gSessionFlags == flags &&
@@ -667,7 +647,12 @@ static void RXTX_LOG_CaptureSession(uint8_t flags, const VFO_Info_t *vfo)
     gSessionFrequency  = frequency;
     gSessionChannel    = channel;
     gSessionTicks500ms = 0;
-    strcpy(gSessionName, name);
+    // vfo->Name is already truncated/trimmed/null-terminated by its sole
+    // writer, SETTINGS_FetchChannelName (settings.c), so a plain copy is enough.
+    if (isMemoryChannel)
+        strcpy(gSessionName, vfo->Name);
+    else
+        gSessionName[0] = 0;
 }
 
 void RXTX_LOG_Init(void)
