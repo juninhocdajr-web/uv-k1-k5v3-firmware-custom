@@ -16,6 +16,7 @@
 #include "driver/py25q16.h"
 #include "driver/st7565.h"
 #include "external/printf/printf.h"
+#include "helper/battery.h"
 #include "misc.h"
 #include "settings.h"
 #include "ui/helper.h"
@@ -41,6 +42,12 @@
 #define RXTX_LOG_FILTER_RX           1u
 #define RXTX_LOG_FILTER_TX           2u
 #define RXTX_LOG_SMETER_UNKNOWN      0xFFu
+// battVolt stores centivolts above 6.00 V, saturating at 8.54 V (254).
+#define RXTX_LOG_BATT_UNKNOWN        0xFFu
+#define RXTX_LOG_BATT_OFFSET         600u
+#define RXTX_LOG_DETAIL_DURATION     0u
+#define RXTX_LOG_DETAIL_SMETER       1u
+#define RXTX_LOG_DETAIL_BATT         2u
 
 typedef struct __attribute__((packed)) {
     uint32_t sequence;
@@ -50,7 +57,8 @@ typedef struct __attribute__((packed)) {
     uint16_t channel;
     uint8_t  flags;
     uint8_t  sMeter;
-    uint8_t  reserved[12];
+    uint8_t  battVolt;
+    uint8_t  reserved[11];
     uint8_t  crc;
     uint8_t  commit;
 } RXTX_LogFlashEntry_t;
@@ -62,7 +70,7 @@ static_assert(RXTX_LOG_VIEW_ANCHOR_COUNT <= 32);
 
 // RXTX_LogEntry_t (RAM) and RXTX_LogFlashEntry_t must stay byte-identical for
 // the copied prefix.
-static_assert(RXTX_LOG_ENTRY_COPY_SIZE == offsetof(RXTX_LogEntry_t, sMeter) + sizeof(((RXTX_LogEntry_t *)0)->sMeter));
+static_assert(RXTX_LOG_ENTRY_COPY_SIZE == offsetof(RXTX_LogEntry_t, battVolt) + sizeof(((RXTX_LogEntry_t *)0)->battVolt));
 static_assert(sizeof(RXTX_LogEntry_t) >= RXTX_LOG_ENTRY_COPY_SIZE);
 
 static RXTX_LogEntry_t gViewCache[RXTX_LOG_VIEW_CACHE_COUNT];
@@ -103,10 +111,11 @@ static uint32_t        gSessionFrequency;
 static uint16_t        gSessionChannel;
 static uint16_t        gSessionTicks500ms;
 static uint8_t         gSessionSMeter;
+static uint8_t         gSessionBattVolt;
 
 static uint16_t        gLogCursor;
 static uint8_t         gLogFilter;
-static bool            gLogShowRssi;
+static uint8_t         gLogDetailMode;
 
 static uint8_t RXTX_LOG_Crc8(const void *data, uint16_t size)
 {
@@ -181,9 +190,21 @@ const char *RXTX_LOG_GetFilterName(void)
     return filterNames[gLogFilter];
 }
 
-static void RXTX_LOG_UpdateSessionRssi(void)
+static void RXTX_LOG_UpdateSessionMeters(void)
 {
-    if (!gSessionActive || (gSessionFlags & RXTX_LOG_FLAG_TX) != 0)
+    if (!gSessionActive)
+        return;
+
+    // Track the lowest battery voltage seen during the session: under TX
+    // load this is the sag, which rebounds as soon as the PA keys off.
+    const uint16_t volt = gBatteryVoltageAverage;
+    const uint8_t battVolt = volt <= RXTX_LOG_BATT_OFFSET
+        ? 0
+        : (uint8_t)MIN(volt - RXTX_LOG_BATT_OFFSET, 254u);
+    if (battVolt < gSessionBattVolt)
+        gSessionBattVolt = battVolt;
+
+    if ((gSessionFlags & RXTX_LOG_FLAG_TX) != 0)
         return;
 
     const int16_t rssiDbm =
@@ -655,6 +676,7 @@ static void RXTX_LOG_WriteSessionMarker(void)
     entry.channel  = RXTX_LOG_CHANNEL_NONE;
     entry.flags    = RXTX_LOG_FLAG_SESSION;
     entry.sMeter   = RXTX_LOG_SMETER_UNKNOWN;
+    entry.battVolt = RXTX_LOG_BATT_UNKNOWN;
 
     RXTX_LOG_WriteEntry(&entry);
     RXTX_LOG_InvalidateViewCache();
@@ -709,7 +731,8 @@ static void RXTX_LOG_CaptureSession(uint8_t flags, const VFO_Info_t *vfo)
     gSessionChannel    = channel;
     gSessionTicks500ms = 0;
     gSessionSMeter     = RXTX_LOG_SMETER_UNKNOWN;
-    RXTX_LOG_UpdateSessionRssi();
+    gSessionBattVolt   = RXTX_LOG_BATT_UNKNOWN;
+    RXTX_LOG_UpdateSessionMeters();
 }
 
 void RXTX_LOG_Init(void)
@@ -725,10 +748,11 @@ void RXTX_LOG_Init(void)
     gLogFilter        = RXTX_LOG_FILTER_ALL;
     gSessionActive    = false;
     gSessionSMeter    = RXTX_LOG_SMETER_UNKNOWN;
+    gSessionBattVolt  = RXTX_LOG_BATT_UNKNOWN;
     gClearActive      = false;
     gClearSector      = 0;
     gMenuClearHandled = false;
-    gLogShowRssi      = false;
+    gLogDetailMode    = RXTX_LOG_DETAIL_DURATION;
     gLogHasTraffic    = false;
     gNextFlashAddress = RXTX_LOG_FLASH_BASE;
     RXTX_LOG_InvalidateViewCache();
@@ -799,12 +823,13 @@ void RXTX_LOG_EndActive(void)
         return;
 
     if (gClearActive) {
-        gSessionActive = false;
-        gSessionSMeter = RXTX_LOG_SMETER_UNKNOWN;
+        gSessionActive   = false;
+        gSessionSMeter   = RXTX_LOG_SMETER_UNKNOWN;
+        gSessionBattVolt = RXTX_LOG_BATT_UNKNOWN;
         return;
     }
 
-    RXTX_LOG_UpdateSessionRssi();
+    RXTX_LOG_UpdateSessionMeters();
 
     RXTX_LogEntry_t entry;
     memset(&entry, 0, sizeof(entry));
@@ -816,6 +841,7 @@ void RXTX_LOG_EndActive(void)
     entry.channel         = gSessionChannel;
     entry.flags           = gSessionFlags;
     entry.sMeter          = gSessionSMeter;
+    entry.battVolt        = gSessionBattVolt;
 
     if (entry.durationSeconds == 0)
         entry.durationSeconds = 1;
@@ -824,14 +850,15 @@ void RXTX_LOG_EndActive(void)
     gLogHasTraffic = true;
     RXTX_LOG_InvalidateViewCache();
 
-    gSessionActive = false;
-    gSessionSMeter = RXTX_LOG_SMETER_UNKNOWN;
+    gSessionActive   = false;
+    gSessionSMeter   = RXTX_LOG_SMETER_UNKNOWN;
+    gSessionBattVolt = RXTX_LOG_BATT_UNKNOWN;
 }
 
 void RXTX_LOG_Tick500ms(void)
 {
     if (gSessionActive) {
-        RXTX_LOG_UpdateSessionRssi();
+        RXTX_LOG_UpdateSessionMeters();
         if (gSessionTicks500ms < 0xFFFEu)
             gSessionTicks500ms++;
     }
@@ -854,7 +881,7 @@ void RXTX_LOG_Task10ms(void)
 void ACTION_RxTxLog(void)
 {
     gLogCursor = 0;
-    gLogShowRssi = false;
+    gLogDetailMode = RXTX_LOG_DETAIL_DURATION;
     RXTX_LOG_InvalidateViewCache();
     gUpdateStatus = true;
     GUI_SelectNextDisplay(DISPLAY_RXTX_LOG);
@@ -962,7 +989,9 @@ void RXTX_LOG_ProcessKeys(KEY_Code_t Key, bool bKeyPressed, bool bKeyHeld)
 
     case KEY_STAR:
         if (bKeyPressed && !bKeyHeld) {
-            gLogShowRssi = !gLogShowRssi;
+            gLogDetailMode = gLogDetailMode >= RXTX_LOG_DETAIL_BATT
+                ? RXTX_LOG_DETAIL_DURATION
+                : (uint8_t)(gLogDetailMode + 1u);
             gUpdateDisplay = true;
         }
         break;
@@ -1081,10 +1110,14 @@ void UI_DisplayRxTxLog(void)
 
         GUI_DisplaySmallest(isTx ? "TX" : "RX", 95, (uint8_t)((row * 8u) + 1u), false, true);
 
-        if (gLogShowRssi && !isTx)
+        if (gLogDetailMode == RXTX_LOG_DETAIL_SMETER && !isTx) {
             RXTX_LOG_FormatSMeter(entry.sMeter, detail);
-        else
+        } else if (gLogDetailMode == RXTX_LOG_DETAIL_BATT) {
+            const uint16_t volt = RXTX_LOG_BATT_OFFSET + entry.battVolt;
+            sprintf(detail, "%u.%02u", volt / 100u, volt % 100u);
+        } else {
             sprintf(detail, "%02u:%02u", entry.durationSeconds / 60u, entry.durationSeconds % 60u);
+        }
         // Draw the fixed-width badge first, then punch the text out of it
         // centered: text length varies (Sn vs S9+XX vs MM:SS), the badge
         // must not. Each glyph cell is 4 px wide, 5 cells fill the badge.
