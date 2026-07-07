@@ -20,6 +20,7 @@
 #include "misc.h"
 #include "settings.h"
 #include "ui/helper.h"
+#include "ui/menu.h"
 #include "ui/ui.h"
 
 #define RXTX_LOG_FLASH_BASE          0x1E0000u
@@ -730,7 +731,9 @@ static void RXTX_LOG_CaptureSession(uint8_t flags, const VFO_Info_t *vfo)
     gSessionFrequency  = frequency;
     gSessionChannel    = channel;
     gSessionTicks500ms = 0;
-    gSessionSMeter     = RXTX_LOG_SMETER_UNKNOWN;
+    // TX sessions repurpose the sMeter byte to store the TX power level
+    // (OUTPUT_POWER, indexes gSubMenu_TXP); RX sessions track the S-meter.
+    gSessionSMeter     = (flags & RXTX_LOG_FLAG_TX) ? vfo->OUTPUT_POWER : RXTX_LOG_SMETER_UNKNOWN;
     gSessionBattVolt   = RXTX_LOG_BATT_UNKNOWN;
     RXTX_LOG_UpdateSessionMeters();
 }
@@ -1110,8 +1113,11 @@ void UI_DisplayRxTxLog(void)
 
         GUI_DisplaySmallest(isTx ? "TX" : "RX", 95, (uint8_t)((row * 8u) + 1u), false, true);
 
-        if (gLogDetailMode == RXTX_LOG_DETAIL_SMETER && !isTx) {
-            RXTX_LOG_FormatSMeter(entry.sMeter, detail);
+        if (gLogDetailMode == RXTX_LOG_DETAIL_SMETER) {
+            if (isTx)
+                strcpy(detail, gSubMenu_TXP[MIN(entry.sMeter, ARRAY_SIZE(gSubMenu_TXP) - 1u)]);
+            else
+                RXTX_LOG_FormatSMeter(entry.sMeter, detail);
         } else if (gLogDetailMode == RXTX_LOG_DETAIL_BATT) {
             const uint16_t volt = RXTX_LOG_BATT_OFFSET + entry.battVolt;
             sprintf(detail, "%u.%02u", volt / 100u, volt % 100u);
