@@ -421,7 +421,9 @@ const char* const gSubMenu_SCRAMBLER[] =
     const char* const gSubMenu_SET_LCK[] =
     {
         "KEYS",
-        "KEYS+PTT"
+        "KEYS\nACTIONS",
+        "KEYS\nPTT",
+        "KEYS\nACTIONS\nPTT"
     };
 
     const char* const gSubMenu_SET_MET[] =

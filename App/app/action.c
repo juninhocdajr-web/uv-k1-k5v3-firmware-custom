@@ -472,7 +472,7 @@ static void ACTION_Scan_FM(bool bRestart)
 static void ACTION_AlarmOr1750(const bool b1750)
 {
 
-    if(gEeprom.KEY_LOCK && gEeprom.KEY_LOCK_PTT)
+    if(gEeprom.KEY_LOCK && (gSetting_set_lck & SET_LCK_PTT))
         return;
 
     #if defined(ENABLE_ALARM)

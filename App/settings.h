@@ -199,7 +199,6 @@ typedef struct {
     uint8_t               TX_TIMEOUT_TIMER;
     bool                  KEY_LOCK;
 #ifdef ENABLE_FEAT_F4HWN
-    bool                  KEY_LOCK_PTT;
     bool                  SET_NAV;
 #endif
 #ifdef ENABLE_FEAT_F4HWN_RESCUE_OPS

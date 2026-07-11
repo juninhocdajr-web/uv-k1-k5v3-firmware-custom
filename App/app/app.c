@@ -2308,7 +2308,7 @@ static void ProcessKey(KEY_Code_t Key, bool bKeyPressed, bool bKeyHeld)
 #ifdef ENABLE_FEAT_F4HWN // Disable PTT if KEY_LOCK
     bool lck_condition = (gEeprom.KEY_LOCK || lowBatPopup) && gCurrentFunction != FUNCTION_TRANSMIT;
 
-    if(!gSetting_set_lck)
+    if((gSetting_set_lck & SET_LCK_PTT) == 0)
         lck_condition = lck_condition && Key != KEY_PTT;
 
     if (lck_condition)
@@ -2325,6 +2325,12 @@ static void ProcessKey(KEY_Code_t Key, bool bKeyPressed, bool bKeyHeld)
             return;
         }
 
+        // The ACTIONS restriction only applies when the keypad is actually
+        // locked: this block is also entered for the low battery popup, where
+        // action keys must keep working as before
+        const bool passActionKey = ((gSetting_set_lck & SET_LCK_ACTIONS) == 0 || !gEeprom.KEY_LOCK) &&
+                                   (Key == KEY_SIDE1 || Key == KEY_SIDE2 || (Key == KEY_MENU && bKeyHeld));
+
         if (Key == KEY_F) { // function/key-lock key
             if (!bKeyPressed)
                 return;
@@ -2339,8 +2345,7 @@ static void ProcessKey(KEY_Code_t Key, bool bKeyPressed, bool bKeyHeld)
         // KEY_MENU has a special treatment here, because we want to pass hold event to ACTION_Handle
         // but we don't want it to complain when initial press happens
         // we want to react on realese instead
-        else if (Key != KEY_SIDE1 && Key != KEY_SIDE2 &&        // pass side buttons
-                 !(Key == KEY_MENU && bKeyHeld)) // pass KEY_MENU held
+        else if (!passActionKey)
         {
             if ((!bKeyPressed || bKeyHeld || (Key == KEY_MENU && bKeyPressed)) && // prevent released or held, prevent KEY_MENU pressed
                 !(Key == KEY_MENU && !bKeyPressed))  // pass KEY_MENU released
