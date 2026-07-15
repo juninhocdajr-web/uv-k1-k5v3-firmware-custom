@@ -477,9 +477,6 @@ static void RXTX_LOG_StepViewCacheScan(void)
             !RXTX_LOG_MatchesFlags(flashEntry.flags))
             continue;
 
-        // Traffic entries carry their own absolute rank (trafficSeq); the
-        // distance from the newest one bounds how far back browsing goes,
-        // no running counter needed to reconstruct it during the scan.
         if (RXTX_LOG_IsTrafficFlags(flashEntry.flags) &&
             (gNextTrafficSequence - 1u - flashEntry.trafficSeq) >= RXTX_LOG_VISIBLE_COUNT) {
             capReached = true;
@@ -702,9 +699,9 @@ static void RXTX_LOG_WriteSessionMarker(void)
     RXTX_LogEntry_t entry;
 
     memset(&entry, 0, sizeof(entry));
-    // Markers take a rank in the traffic sequence so the K5Viewer stream
-    // can order and page them along with the RX/TX rows they separate.
-    entry.trafficSeq = gNextTrafficSequence++;
+    // Markers share the ordinal of the next traffic row. Their flash
+    // sequence remains unique and is used to order them in K5Viewer.
+    entry.trafficSeq = gNextTrafficSequence;
     entry.channel  = RXTX_LOG_CHANNEL_NONE;
     entry.flags    = RXTX_LOG_FLAG_SESSION;
     entry.sMeter   = RXTX_LOG_SMETER_UNKNOWN;
@@ -791,7 +788,7 @@ static void RXTX_LOG_SetK5ViewerChannelName(RXTX_LogK5ViewerRow_t *row, uint16_t
 static void RXTX_LOG_CopyK5ViewerRow(RXTX_LogK5ViewerRow_t *dst, const RXTX_LogFlashEntry_t *src)
 {
     dst->frequency       = src->frequency;
-    dst->trafficSeq      = src->trafficSeq;
+    dst->trafficSeq      = src->sequence;
     dst->durationSeconds = src->durationSeconds;
     dst->channel         = src->channel;
     dst->flags           = src->flags;
@@ -800,9 +797,9 @@ static void RXTX_LOG_CopyK5ViewerRow(RXTX_LogK5ViewerRow_t *dst, const RXTX_LogF
     RXTX_LOG_SetK5ViewerChannelName(dst, src->channel);
 }
 
-// Send up to `count` rows whose trafficSeq is below `beforeSeq`, newest
+// Send up to `count` rows whose flash sequence is below `beforeSeq`, newest
 // first, scanning the ring backwards from the write head and zero-padding
-// past the last valid entry. Returns the trafficSeq of the oldest row
+// past the last valid entry. Returns the sequence of the oldest row
 // sent when more visible history remains below it, 0 otherwise: feeding
 // that value back as the next `beforeSeq` pages through the whole
 // visible history without duplicating or skipping rows, even while new
@@ -813,6 +810,7 @@ static uint32_t RXTX_LOG_SendK5ViewerRows(uint32_t beforeSeq, uint8_t count,
     RXTX_LogK5ViewerRow_t row;
     uint8_t rowsSent = 0;
     uint32_t nextBefore = 0;
+    bool trafficLimitReached = false;
 
     if (gLogHasTraffic && beforeSeq > 0) {
         uint16_t slot = RXTX_LOG_AddressToSlot(gNextFlashAddress);
@@ -827,28 +825,25 @@ static uint32_t RXTX_LOG_SendK5ViewerRows(uint32_t beforeSeq, uint8_t count,
                 break;
             if (!RXTX_LOG_IsValidFlashEntry(&flashEntry))
                 continue;
-            if ((gNextTrafficSequence - 1u - flashEntry.trafficSeq) >= RXTX_LOG_VISIBLE_COUNT) {
-                // The backwards scan only guarantees decreasing ranks for
-                // traffic rows: a session marker written before markers
-                // carried a rank reads as 0, skip it without ending the
-                // scan or it would truncate the remaining history.
-                if (RXTX_LOG_IsTrafficFlags(flashEntry.flags))
-                    break;
-                continue;
-            }
-            if (flashEntry.trafficSeq >= beforeSeq)
-                continue;
 
-            RXTX_LOG_CopyK5ViewerRow(&row, &flashEntry);
-            send((const uint8_t *)&row, sizeof(row));
-            rowsSent++;
-            nextBefore = flashEntry.trafficSeq;
+            if (RXTX_LOG_IsTrafficFlags(flashEntry.flags) &&
+                (gNextTrafficSequence - 1u - flashEntry.trafficSeq) >= RXTX_LOG_VISIBLE_COUNT) {
+                trafficLimitReached = true;
+                break;
+            }
+
+            if (flashEntry.sequence < beforeSeq) {
+                RXTX_LOG_CopyK5ViewerRow(&row, &flashEntry);
+                send((const uint8_t *)&row, sizeof(row));
+                rowsSent++;
+                nextBefore = flashEntry.sequence;
+            }
         }
     }
 
-    // A short page means the log ran out; a full page ending on the
-    // oldest visible entry is equally final.
-    if (rowsSent < count || (gNextTrafficSequence - nextBefore) >= RXTX_LOG_VISIBLE_COUNT)
+    // A short page means the log ran out. Reaching 512 traffic rows is
+    // equally final; session markers never consume one of those rows.
+    if (rowsSent < count || trafficLimitReached)
         nextBefore = 0;
 
     memset(&row, 0, sizeof(row));
@@ -877,7 +872,7 @@ void RXTX_LOG_SendK5ViewerPacket(void (*send)(const uint8_t *data, uint16_t size
     send(header, sizeof(header));
 
     row.frequency       = gSessionFrequency;
-    row.trafficSeq      = gNextTrafficSequence;
+    row.trafficSeq      = gNextSequence;
     row.durationSeconds = (gSessionTicks500ms + 1u) / 2u;
     row.channel         = gSessionChannel;
     row.flags           = gSessionFlags;
@@ -885,17 +880,16 @@ void RXTX_LOG_SendK5ViewerPacket(void (*send)(const uint8_t *data, uint16_t size
     row.battVolt        = gSessionBattVolt;
     RXTX_LOG_SetK5ViewerChannelName(&row, gSessionChannel);
     send((const uint8_t *)&row, sizeof(row));
-    RXTX_LOG_SendK5ViewerRows(gNextTrafficSequence, RXTX_LOG_K5VIEWER_ROW_COUNT, send);
+    RXTX_LOG_SendK5ViewerRows(gNextSequence, RXTX_LOG_K5VIEWER_ROW_COUNT, send);
 }
 
 uint32_t RXTX_LOG_SendK5ViewerHistoryPage(uint32_t beforeSeq, void (*send)(const uint8_t *data, uint16_t size))
 {
-    // First page of a dump: start right below the rows the live packet
-    // already covers. A log shorter than the live packet leaves nothing
-    // to dump (the subtraction would wrap).
+    // Flash sequence counts every stored row, including session markers,
+    // so subtracting the live page size lands directly below that page.
     if (beforeSeq == RXTX_LOG_K5VIEWER_HISTORY_START)
-        beforeSeq = gNextTrafficSequence > RXTX_LOG_K5VIEWER_ROW_COUNT
-                        ? gNextTrafficSequence - RXTX_LOG_K5VIEWER_ROW_COUNT
+        beforeSeq = gNextSequence > RXTX_LOG_K5VIEWER_ROW_COUNT
+                        ? gNextSequence - RXTX_LOG_K5VIEWER_ROW_COUNT
                         : 0;
 
     return RXTX_LOG_SendK5ViewerRows(beforeSeq, RXTX_LOG_K5VIEWER_HISTORY_ROW_COUNT, send);
@@ -961,16 +955,12 @@ void RXTX_LOG_Init(void)
         if (!RXTX_LOG_IsValidFlashEntry(&flashEntry))
             continue;
 
-        if (RXTX_LOG_IsTrafficFlags(flashEntry.flags))
+        if (RXTX_LOG_IsTrafficFlags(flashEntry.flags)) {
             gLogHasTraffic = true;
-
-        // Session markers consume a trafficSeq too: restore the counter
-        // from every ranked entry, or a reboot would hand the rank the
-        // boot marker just took to the next traffic entry. Markers written
-        // before they carried a rank read as 0 and never win.
-        if (!foundTraffic || flashEntry.trafficSeq > maxTrafficSeq) {
-            foundTraffic = true;
-            maxTrafficSeq = flashEntry.trafficSeq;
+            if (!foundTraffic || flashEntry.trafficSeq > maxTrafficSeq) {
+                foundTraffic = true;
+                maxTrafficSeq = flashEntry.trafficSeq;
+            }
         }
 
         if (!found || flashEntry.sequence > maxSequence) {
