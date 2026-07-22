@@ -17,10 +17,16 @@ jobs:
         chmod +x compile-with-docker.sh
         ./compile-with-docker.sh
 
+    - name: Find compiled files
+      run: |
+        echo "Searching for bin files:"
+        find . -name "*.bin" -o -name "*.packed"
+
     - name: Upload firmware artifact
       uses: actions/upload-artifact@v4
       with:
         name: firmware-artifact
         path: |
-          build/**/*.packed.bin
-          *.packed.bin
+          build/**/*.bin
+          **/*.bin
+          *.bin
