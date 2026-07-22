@@ -29,8 +29,8 @@ const uint16_t CTCSS_Options[50] = {
 
 // Indices in CTCSS_Options for the 12 non-homologated tones.
 static const uint8_t CTCSS_ExtraIdx[12] = {
-     1,  26,  28,  30,  32,  34,  36,  38,  39,  41,
-    45,  49
+     1,    26,    28,    30,    32,    34,    36,    38,    39,    41,
+    45,    49
 };
 
 // Adicionado espaço para incluir DPL650 e DPL777 (ajustado de 104 para 106)
@@ -48,14 +48,14 @@ const uint16_t DCS_Options[106] = {
     0x0146, 0x014E, 0x0153, 0x0156, 0x015A, 0x0166, 0x0175, 0x0186,
     0x018A, 0x0194, 0x0197, 0x0199, 0x019A, 0x01AC, 0x01B2, 0x01B4,
     0x01C3, 0x01CA, 0x01D3, 0x01D9, 0x01DA, 0x01DC, 0x01E3, 0x01EC,
-    0x02CA, // Representação hexadecimal padrão para DPL650
-    0x03FE  // Representação hexadecimal padrão para DPL777
+    0x01A8, // DPL650 formatado para o firmware
+    0x01FF  // DPL777 formatado para o firmware
 };
 
 // Indices in DCS_Options for the 21 non-PMR446 DCS codes.
 static const uint8_t DCS_ExtraIdx[21] = {
-     5,   9,  19,  25,  34,  36,  41,  43,  44,  48,
-    50,  54,  56,  60,  71,  72,  73,  74,  75,  82,
+     5,     9,    19,    25,    34,    36,    41,    43,    44,    48,
+    50,    54,    56,    60,    71,    72,    73,    74,    75,    82,
     83
 };
 
@@ -137,7 +137,7 @@ static uint8_t DCS_GetApprovedIndex(uint8_t Option, size_t options_size, size_t 
 
     for (i = 0; i < options_size; i++) {
         const bool is_extra = extra_pos < extraidx_size &&
-                            i == extraidx[extra_pos];
+                              i == extraidx[extra_pos];
 
         if (is_extra) {
             extra_pos++;
