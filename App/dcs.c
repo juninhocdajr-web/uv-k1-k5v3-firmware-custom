@@ -33,7 +33,7 @@ static const uint8_t CTCSS_ExtraIdx[12] = {
     45,    49
 };
 
-// Adicionado espaço para incluir DPL650 e DPL777 (ajustado de 104 para 106)
+// Adicionado espaço para incluir DPL650 e DPL777 (tamanho ajustado para 106)
 const uint16_t DCS_Options[106] = {
     0x0013, 0x0015, 0x0016, 0x0019, 0x001A, 0x001E, 0x0023, 0x0027,
     0x0029, 0x002B, 0x002C, 0x0035, 0x0039, 0x003A, 0x003B, 0x003C,
@@ -48,15 +48,15 @@ const uint16_t DCS_Options[106] = {
     0x0146, 0x014E, 0x0153, 0x0156, 0x015A, 0x0166, 0x0175, 0x0186,
     0x018A, 0x0194, 0x0197, 0x0199, 0x019A, 0x01AC, 0x01B2, 0x01B4,
     0x01C3, 0x01CA, 0x01D3, 0x01D9, 0x01DA, 0x01DC, 0x01E3, 0x01EC,
-    0x01A8, // DPL650 formatado para o firmware
-    0x01FF  // DPL777 formatado para o firmware
+    0x01A8, // DPL650 formatado para o firmware (índice 104)
+    0x01FF  // DPL777 formatado para o firmware (índice 105)
 };
 
-// Indices in DCS_Options for the 21 non-PMR446 DCS codes.
-static const uint8_t DCS_ExtraIdx[21] = {
+// Indices in DCS_Options para os códigos extras (atualizado para 23 elementos)
+static const uint8_t DCS_ExtraIdx[23] = {
      5,     9,    19,    25,    34,    36,    41,    43,    44,    48,
     50,    54,    56,    60,    71,    72,    73,    74,    75,    82,
-    83
+    83,   104,   105
 };
 
 static uint32_t DCS_CalculateGolay(uint32_t CodeWord)
