@@ -7,11 +7,11 @@
  *
  *     http://www.apache.org/licenses/LICENSE-2.0
  *
- *     Unless required by applicable law or agreed to in writing, software
- *     distributed under the License is distributed on an "AS IS" BASIS,
- *     WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- *     See the License for the specific language governing permissions and
- *     limitations under the License.
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
  */
 
 #include <stddef.h>
@@ -20,20 +20,21 @@
 
 // CTCSS Hz * 10
 const uint16_t CTCSS_Options[50] = {
-     670,  693,  719,  744,  770,  797,  825,  854,  885,  915,
-     948,  974, 1000, 1035, 1072, 1109, 1148, 1188, 1230, 1273,
-    1318, 1365, 1413, 1462, 1514, 1567, 1598, 1622, 1655, 1679,
-    1713, 1738, 1773, 1799, 1835, 1862, 1899, 1928, 1966, 1995,
-    2035, 2065, 2107, 2181, 2257, 2291, 2336, 2418, 2503, 2541
+     670,   693,   719,   744,   770,   797,   825,   854,   885,   915,
+     948,   974,  1000,  1035,  1072,  1109,  1148,  1188,  1230,  1273,
+    1318,  1365,  1413,  1462,  1514,  1567,  1598,  1622,  1655,  1679,
+    1713,  1738,  1773,  1799,  1835,  1862,  1899,  1928,  1966,  1995,
+    2035,  2065,  2107,  2181,  2257,  2291,  2336,  2418,  2503,  2541
 };
 
 // Indices in CTCSS_Options for the 12 non-homologated tones.
 static const uint8_t CTCSS_ExtraIdx[12] = {
-     1, 26, 28, 30, 32, 34, 36, 38, 39, 41,
-    45, 49
+     1,  26,  28,  30,  32,  34,  36,  38,  39,  41,
+    45,  49
 };
 
-const uint16_t DCS_Options[104] = {
+// Adicionado espaço para incluir DPL650 e DPL777 (ajustado de 104 para 106)
+const uint16_t DCS_Options[106] = {
     0x0013, 0x0015, 0x0016, 0x0019, 0x001A, 0x001E, 0x0023, 0x0027,
     0x0029, 0x002B, 0x002C, 0x0035, 0x0039, 0x003A, 0x003B, 0x003C,
     0x004C, 0x004D, 0x004E, 0x0052, 0x0055, 0x0059, 0x005A, 0x005C,
@@ -47,12 +48,14 @@ const uint16_t DCS_Options[104] = {
     0x0146, 0x014E, 0x0153, 0x0156, 0x015A, 0x0166, 0x0175, 0x0186,
     0x018A, 0x0194, 0x0197, 0x0199, 0x019A, 0x01AC, 0x01B2, 0x01B4,
     0x01C3, 0x01CA, 0x01D3, 0x01D9, 0x01DA, 0x01DC, 0x01E3, 0x01EC,
+    0x02CA, // Representação hexadecimal padrão para DPL650
+    0x03FE  // Representação hexadecimal padrão para DPL777
 };
 
 // Indices in DCS_Options for the 21 non-PMR446 DCS codes.
 static const uint8_t DCS_ExtraIdx[21] = {
-     5,  9, 19, 25, 34, 36, 41, 43, 44, 48,
-    50, 54, 56, 60, 71, 72, 73, 74, 75, 82,
+     5,   9,  19,  25,  34,  36,  41,  43,  44,  48,
+    50,  54,  56,  60,  71,  72,  73,  74,  75,  82,
     83
 };
 
@@ -134,7 +137,7 @@ static uint8_t DCS_GetApprovedIndex(uint8_t Option, size_t options_size, size_t 
 
     for (i = 0; i < options_size; i++) {
         const bool is_extra = extra_pos < extraidx_size &&
-                              i == extraidx[extra_pos];
+                            i == extraidx[extra_pos];
 
         if (is_extra) {
             extra_pos++;
